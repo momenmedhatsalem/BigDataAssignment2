@@ -5,15 +5,23 @@
 #   2. Loop paradigm (plain Python, reading the file line by line)
 # ============================================================
 
-from pyspark.sql import SparkSession
-import time
-
+import time, shutil, os
+from pyspark import SparkConf, SparkContext
 # --- Setup Spark ---
-spark = SparkSession.builder.appName("WikimediaQ4Q5").getOrCreate()
-spark.sparkContext.setLogLevel("ERROR")
+conf = SparkConf().setMaster("local").setAppName("WikimediaQ4Q5")
+sc = SparkContext(conf = conf)
+
+# spark = SparkSession.builder.appName("WikimediaQ4Q5").getOrCreate()
+# spark.sparkContext.setLogLevel("ERROR")
+
+# --- Clean up previous output directories so saveAsTextFile doesn't fail ---
+for path in ["query4/map_reduce", "query4/loop", "query4/comparison",
+             "query5/map_reduce", "query5/loop", "query5/comparison"]:
+    if os.path.exists(path):
+        shutil.rmtree(path)
 
 # --- Load the raw dataset into Spark (used by Map-Reduce approaches) ---
-raw = spark.sparkContext.textFile("pagecounts-20160101-000000_parsed.out")
+raw = sc.textFile("pagecounts-20160101-000000_parsed.out")
 
 # --- Parse each line into (project, title, hits, size) ---
 def parse_line(line):
@@ -25,10 +33,9 @@ def parse_line(line):
     except ValueError:
         return None
 
-# --- Helper to write a list of lines to a file ---
-def write_file(path, lines):
-    with open(path, "w") as f:
-        f.write("\n".join(lines) + "\n")
+# --- Helper to save a list of strings as a Spark text file ---
+def save(path, lines):
+    sc.parallelize(lines).saveAsTextFile(path)
 
 # --- Helper to iterate over raw lines from Spark (used by Loop approaches) ---
 # toLocalIterator() streams lines one partition at a time to the driver,
@@ -65,8 +72,14 @@ top5_mapreduce = (
 
 time_q4_mapreduce = time.time() - start
 
+save("query4/map_reduce", (
+    ["QUERY 4 (Map-Reduce): Top 5 Projects by Total Page Hits", "=" * 50] +
+    [f"Rank {i+1}: {project} — {hits:,} hits" for i, (project, hits) in enumerate(top5_mapreduce)] +
+    ["", f"Time: {time_q4_mapreduce:.4f}s"]
+))
+
 # ---- Approach 2: Loop --------------------------------------
-# Step 1: read the file line by line using plain Python
+# Step 1: stream lines from Spark to the driver one by one
 # Step 2: iterate and accumulate hits per project in a dict
 # Step 3: sort and pick top 5
 start = time.time()
@@ -79,27 +92,17 @@ top5_loop = sorted(hits_per_project.items(), key=lambda x: -x[1])[:5]    # top 5
 
 time_q4_loop = time.time() - start
 
-# ---- Write results to files --------------------------------
-def format_q4(label, data, t):
-    lines = [
-        f"QUERY 4 ({label}): Top 5 Projects by Total Page Hits",
-        "=" * 50,
-        f"{'Rank':<6} {'Project':<15} {'Total Hits':>15}",
-        "-" * 40,
-    ]
-    for rank, (project, hits) in enumerate(data, 1):
-        lines.append(f"{rank:<6} {project:<15} {hits:>15,}")
-    lines += ["", f"Time: {t:.4f}s"]
-    return lines
+save("query4/loop", (
+    ["QUERY 4 (Loop): Top 5 Projects by Total Page Hits", "=" * 50] +
+    [f"Rank {i+1}: {project} — {hits:,} hits" for i, (project, hits) in enumerate(top5_loop)] +
+    ["", f"Time: {time_q4_loop:.4f}s"]
+))
 
-write_file("query4/map_reduce.txt", format_q4("Map-Reduce", top5_mapreduce, time_q4_mapreduce))
-write_file("query4/loop.txt",       format_q4("Loop",       top5_loop,      time_q4_loop))
-
-# ---- Write comparison --------------------------------------
+# ---- Save comparison --------------------------------------
 faster = "Map-Reduce" if time_q4_mapreduce < time_q4_loop else "Loop"
 ratio  = max(time_q4_mapreduce, time_q4_loop) / min(time_q4_mapreduce, time_q4_loop)
 
-write_file("query4/comparison.txt", [
+save("query4/comparison", [
     "QUERY 4: Performance Comparison",
     "=" * 50,
     f"Map-Reduce Time : {time_q4_mapreduce:.4f}s",
@@ -130,8 +133,14 @@ top_page_mapreduce = (
 
 time_q5_mapreduce = time.time() - start
 
+save("query5/map_reduce", (
+    ["QUERY 5 (Map-Reduce): Page with Highest Hits per Project", "=" * 70] +
+    [f"{project:<15} {title:<35} {hits:>10,}" for project, (title, hits) in (top_page_mapreduce)] +
+    ["", f"Total Projects: {len(top_page_mapreduce)}", f"Time: {time_q5_mapreduce:.4f}s"]
+))
+
 # ---- Approach 2: Loop --------------------------------------
-# Step 1: read the file line by line using plain Python
+# Step 1: stream lines from Spark to the driver one by one
 # Step 2: iterate and keep track of the max-hit page per project
 start = time.time()
 
@@ -144,24 +153,13 @@ top_page_loop = list(max_page_per_project.items())
 
 time_q5_loop = time.time() - start
 
-# ---- Write results to files --------------------------------
-def format_q5(label, data, t):
-    lines = [
-        f"QUERY 5 ({label}): Page with Highest Hits per Project",
-        "=" * 70,
-        f"{'Project':<15} {'Page Title':<35} {'Hits':>10}",
-        "-" * 70,
-    ]
-    for project, (title, hits) in sorted(data):
-        title_display = title[:32] + "..." if len(title) > 35 else title
-        lines.append(f"{project:<15} {title_display:<35} {hits:>10,}")
-    lines += ["", f"Total Projects: {len(data)}", f"Time: {t:.4f}s"]
-    return lines
+save("query5/loop", (
+    ["QUERY 5 (Loop): Page with Highest Hits per Project", "=" * 70] +
+    [f"{project:<15} {title:<35} {hits:>10,}" for project, (title, hits) in top_page_loop] +
+    ["", f"Total Projects: {len(top_page_loop)}", f"Time: {time_q5_loop:.4f}s"]
+))
 
-write_file("query5/map_reduce.txt", format_q5("Map-Reduce", top_page_mapreduce, time_q5_mapreduce))
-write_file("query5/loop.txt",       format_q5("Loop",       top_page_loop,      time_q5_loop))
-
-# ---- Write comparison --------------------------------------
+# ---- Save comparison --------------------------------------
 mr_dict = dict(top_page_mapreduce)
 lp_dict = dict(top_page_loop)
 mismatches = [(p, mr_dict[p], lp_dict[p]) for p in mr_dict if mr_dict.get(p) != lp_dict.get(p)]
@@ -183,7 +181,7 @@ if mismatches:
     for p, mr_val, lp_val in mismatches:
         comparison_lines.append(f"  {p}: {mr_val}  vs  {lp_val}")
 
-write_file("query5/comparison.txt", comparison_lines)
+save("query5/comparison", comparison_lines)
 
 # ---- Summary -----------------------------------------------
 print("\nDone! Results written to query4/ and query5/")
