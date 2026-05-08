@@ -6,7 +6,7 @@ import logging
 logging.getLogger("py4j").setLevel(logging.ERROR)
 
 if __name__ == "__main__":
-    conf = SparkConf().setAppName("MyApp").setMaster("local[*]")
+    conf = SparkConf().setAppName("WikimediaQ2Q3").setMaster("local[*]")
     sc = SparkContext(conf=conf)
     sc.setLogLevel("ERROR")
 
@@ -90,9 +90,8 @@ if __name__ == "__main__":
 
     start = time.time()
 
-    # Function to count words in a partition
     def word_count_partition(partition):
-        import re  # Import inside function to avoid PySpark serialization issues
+        import re
         freq = {}
         for row in partition:
             title = row[1].lower()
@@ -104,13 +103,10 @@ if __name__ == "__main__":
         for k, v in freq.items():
             yield (k, v)
 
-    # Apply partitioned word count
     partitioned_counts = parsed.mapPartitions(word_count_partition)
 
-    # Reduce by key to get total counts
     total_counts = partitioned_counts.reduceByKey(lambda a, b: a + b)
 
-    # Get top 10 words by count
     top10_loop = total_counts.takeOrdered(10, key=lambda x: -x[1])
 
     end = time.time()
